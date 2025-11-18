@@ -1,0 +1,18 @@
+{
+  "min_streak_length": 4,
+  "max_streak_length": 8,
+  "min_reversal_prob": 0.52,
+  "min_sample_size": 20,
+  "volume_threshold": 1.0,
+  "volatility_threshold": 2.0,
+  "avoid_hours": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "kelly_fraction": 0.25,
+  "max_position_pct": 0.05
+}

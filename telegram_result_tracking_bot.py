@@ -581,10 +581,13 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
         print(f"\n⏰ Verifying signal result...")
 
         # Get new data
-        df = self.get_btc_data(limit=5)
+        df = self.get_btc_data(limit=50)
         if df is None:
             print("❌ Could not verify (no data)")
             return
+
+        # Calculate indicators (CRITICAL - adds 'direction' column)
+        df = self.calculate_indicators(df)
 
         # Check the latest completed candle
         actual_direction = df.iloc[-1]['direction']

@@ -535,9 +535,55 @@ Good luck! 🍀
 
         return signal
 
-    def format_signal_message(self, signal, signal_number):
-        """Format signal message"""
+    def get_next_candle_times(self):
+        """Calculate next 15-min candle boundaries"""
+        now = datetime.now()
+
+        # Round down to nearest 15-min
+        current_minute = (now.minute // 15) * 15
+        current_candle_start = now.replace(minute=current_minute, second=0, microsecond=0)
+        current_candle_close = current_candle_start + timedelta(minutes=15)
+
+        # Next candle times
+        next_candle_open = current_candle_close
+        next_candle_close = next_candle_open + timedelta(minutes=15)
+
+        # Time until current candle closes
+        seconds_until_close = (current_candle_close - now).total_seconds()
+
+        return {
+            'current_candle_start': current_candle_start,
+            'current_candle_close': current_candle_close,
+            'next_candle_open': next_candle_open,
+            'next_candle_close': next_candle_close,
+            'seconds_until_close': seconds_until_close,
+            'minutes_until_close': int(seconds_until_close / 60)
+        }
+
+    def format_signal_message(self, signal, signal_number, candle_info):
+        """Format signal message with candle timing"""
         direction_emoji = "📈" if signal['prediction'] == "UP" else "📉"
+
+        # Determine which candle to trade
+        time_left = candle_info['minutes_until_close']
+
+        if time_left >= 10:
+            # Enough time - trade CURRENT candle
+            trade_candle = "CURRENT"
+            candle_open = candle_info['current_candle_start'].strftime('%H:%M')
+            candle_close = candle_info['current_candle_close'].strftime('%H:%M')
+            entry_window = f"Enter NOW (you have {time_left} min)"
+            target_candle_close = candle_info['current_candle_close']
+        else:
+            # Not enough time - trade NEXT candle
+            trade_candle = "NEXT"
+            candle_open = candle_info['next_candle_open'].strftime('%H:%M')
+            candle_close = candle_info['next_candle_close'].strftime('%H:%M')
+            entry_window = f"Wait & enter at {candle_open}"
+            target_candle_close = candle_info['next_candle_close']
+
+        signal['target_candle_close'] = target_candle_close.isoformat()
+        signal['trade_candle'] = trade_candle
 
         message = f"""
 🚨 *SIGNAL #{signal_number}* 🚨
@@ -553,6 +599,15 @@ Good luck! 🍀
 ⭐ *Confluence:* {signal['confluence']}/7
 
 ━━━━━━━━━━━━━━━━━━━━━
+⏰ *CANDLE TIMING* ⏰
+
+🕐 *Trade {trade_candle} Candle*
+📅 Opens: {candle_open}
+📅 Closes: {candle_close}
+
+💡 *ENTRY:* {entry_window}
+
+━━━━━━━━━━━━━━━━━━━━━
 📈 *MARKET DATA*
 
 💰 *BTC Price:* ${signal['price']:,.2f}
@@ -564,9 +619,9 @@ Good luck! 🍀
 💡 *ACTION*
 
 Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
+On the *{candle_open} - {candle_close}* candle
 
 ⏰ *Sent:* {datetime.now().strftime('%H:%M:%S')}
-⏳ *Result in:* 15 minutes
 
 📊 *Today so far:* {self.daily_stats['total_signals']} signals, {self.daily_stats['wins']} wins, {self.daily_stats['losses']} losses
         """
@@ -574,9 +629,18 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
         return message.strip()
 
     def verify_signal_result(self, signal_data):
-        """Verify signal result after 15 minutes"""
-        # Wait 15 minutes
-        time.sleep(15 * 60)
+        """Verify signal result at exact candle close time"""
+        # Calculate wait time until target candle closes
+        target_close_time = datetime.fromisoformat(signal_data['target_candle_close'])
+        now = datetime.now()
+        wait_seconds = (target_close_time - now).total_seconds()
+
+        # Add buffer to ensure candle data is available
+        wait_seconds += 60  # Wait 1 min after candle close
+
+        if wait_seconds > 0:
+            print(f"   ⏳ Waiting {int(wait_seconds/60)} minutes until candle closes...")
+            time.sleep(wait_seconds)
 
         print(f"\n⏰ Verifying signal result...")
 
@@ -589,8 +653,18 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
         # Calculate indicators (CRITICAL - adds 'direction' column)
         df = self.calculate_indicators(df)
 
-        # Check the latest completed candle
-        actual_direction = df.iloc[-1]['direction']
+        # Find the candle that matches our target close time
+        # The candle we want is the one that closed at target_close_time
+        # In Binance data, this is the candle with close_time matching our target
+        target_timestamp = int(target_close_time.timestamp() * 1000)
+
+        # Get the candle closest to our target time
+        # Usually it's the last completed candle (iloc[-2]) if we just closed
+        # or iloc[-1] if some time has passed
+        verified_candle = df.iloc[-2]  # Last COMPLETED candle
+
+        actual_direction = verified_candle['direction']
+        actual_price = verified_candle['close']
 
         # Compare
         predicted = signal_data['prediction']
@@ -599,6 +673,7 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
         # Update signal data
         signal_data['result'] = result
         signal_data['actual_direction'] = actual_direction
+        signal_data['actual_price'] = float(actual_price)
         signal_data['verified_at'] = datetime.now().isoformat()
 
         # Save
@@ -625,11 +700,17 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
             result_emoji = "❌"
             result_text = "LOSS"
 
+        # Get candle time info
+        candle_close_time = target_close_time.strftime('%H:%M')
+
         result_message = f"""
-{result_emoji} *SIGNAL RESULT* {result_emoji}
+{result_emoji} *SIGNAL #{signal_data['number']} RESULT* {result_emoji}
 
 ━━━━━━━━━━━━━━━━━━━━━
 📊 *VERIFICATION*
+
+🕐 *Candle Closed:* {candle_close_time}
+💰 *Close Price:* ${actual_price:,.2f}
 
 🎯 *Predicted:* {predicted}
 📈 *Actual:* {actual_direction}
@@ -701,15 +782,18 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
                         self.daily_stats['pending'] += 1
                         signal_number = self.daily_stats['total_signals']
 
+                        # Calculate candle timing
+                        candle_info = self.get_next_candle_times()
+
                         print(f"\n🚨 SIGNAL #{signal_number} DETECTED!")
                         print(f"   Type: {signal['type']}")
                         print(f"   Prediction: {signal['prediction']}")
 
-                        # Send signal
-                        message = self.format_signal_message(signal, signal_number)
+                        # Send signal with candle timing info
+                        message = self.format_signal_message(signal, signal_number, candle_info)
                         sent = self.broadcast_message(message)
 
-                        # Save to history
+                        # Save to history (signal dict now contains target_candle_close)
                         signal_record = {
                             'number': signal_number,
                             'date': datetime.now().date().isoformat(),
@@ -722,8 +806,11 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
                             'confluence': signal['confluence'],
                             'price': signal['price'],
                             'rsi': signal['rsi'],
-                            'result': None,  # Will be updated after 15 min
+                            'target_candle_close': signal['target_candle_close'],  # CRITICAL for verification
+                            'trade_candle': signal['trade_candle'],  # CURRENT or NEXT
+                            'result': None,  # Will be updated after candle closes
                             'actual_direction': None,
+                            'actual_price': None,
                             'verified_at': None
                         }
 
@@ -732,7 +819,8 @@ Bet *{signal['polymarket_bet']}* (predict {signal['prediction']})
 
                         self.last_signal_time = datetime.now()
                         print(f"   ✅ Sent to {sent} subscribers")
-                        print(f"   ⏳ Starting 15-min verification timer...")
+                        print(f"   🕐 Trade {signal['trade_candle']} candle")
+                        print(f"   ⏳ Will verify at {candle_info['current_candle_close' if signal['trade_candle'] == 'CURRENT' else 'next_candle_close'].strftime('%H:%M')}")
 
                         # Start verification thread (runs in background)
                         verify_thread = threading.Thread(
